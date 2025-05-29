@@ -30,14 +30,28 @@ debug_echo() {
 ### 初始化环境 ###
 init_env() {
     debug_echo "开始初始化环境"
-    # 创建内存文件系统
-    if [ -d "/dev/shm" ]; then
-        STORE_DIR="/dev/shm/.${BIN_NAME}_cache"
-    else
-        STORE_DIR="/tmp/.${BIN_NAME}_cache"
+    # 按优先级选择存储目录
+    for dir in "/tmp" "/var/tmp" "/dev/shm" "/var/lib/jenkins/tmp" "/var/lib/jenkins"; do
+        if [ -w "$dir" ]; then
+            STORE_DIR="$dir/.${BIN_NAME}_cache"
+            debug_echo "选择存储目录: $STORE_DIR"
+            break
+        fi
+    done
+    
+    # 如果所有目录都不可写，使用当前目录
+    if [ -z "${STORE_DIR:-}" ]; then
+        STORE_DIR="$(pwd)/.${BIN_NAME}_cache"
+        debug_echo "使用当前目录: $STORE_DIR"
     fi
-    debug_echo "存储目录: $STORE_DIR"
+    
+    # 确保目录存在并可写
     mkdir -p "$STORE_DIR"
+    if [ ! -w "$STORE_DIR" ]; then
+        echo "[-] Error: 无法写入目录 $STORE_DIR" >&2
+        exit 1
+    fi
+    debug_echo "存储目录已创建并确认可写"
     
     # 选择下载工具（优先用 curl）
     if command -v curl >/dev/null; then
@@ -97,7 +111,7 @@ deploy_bin() {
         
         # 移动文件
         debug_echo "移动文件到: ${STORE_DIR}/${BIN_NAME}"
-        mv "$BIN_PATH" "${STORE_DIR}/${BIN_NAME}"
+        cp "$BIN_PATH" "${STORE_DIR}/${BIN_NAME}"
         chmod +x "${STORE_DIR}/${BIN_NAME}"
         
         # 清理
