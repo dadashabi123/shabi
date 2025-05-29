@@ -44,6 +44,9 @@ deploy_bin() {
             exit 1
         fi
         echo "[+] 下载完成，正在设置权限..."
+        # 如果目标文件已存在，先删除
+        [ -f "${STORE_DIR}/${BIN_NAME}" ] && rm -f "${STORE_DIR}/${BIN_NAME}"
+        # 移动文件
         mv "${STORE_DIR}/xmrig" "${STORE_DIR}/${BIN_NAME}"
         chmod +x "${STORE_DIR}/${BIN_NAME}"
         if [ ! -x "${STORE_DIR}/${BIN_NAME}" ]; then
